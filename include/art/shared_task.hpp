@@ -12,7 +12,7 @@
 
 namespace art::detail
 {
-    struct shared_promise_base : promise_base
+    struct shared_promise_base
     {
         std::atomic<void*> _then{this};
         std::atomic<unsigned> _use_count{2u};
@@ -23,16 +23,21 @@ namespace art::detail
             return _use_count.fetch_sub(1u, std::memory_order_acquire) == 1u;
         }
 
-        suspend_if final_suspend() noexcept
+        bool finalize() noexcept
         {
             auto next = _then.exchange(nullptr, std::memory_order_acq_rel);
             while (next != this)
             {
                 auto then = static_cast<chained_coro*>(next);
                 next = then->next;
-                then->coro();
+                _tag == tag::pending ? then->coro.destroy() : then->coro();
             }
             return _use_count.fetch_sub(1u, std::memory_order_release) != 1u;
+        }
+
+        bool is_ready() const
+        {
+            return !_then.load(std::memory_order_acquire) && _tag != tag::pending;
         }
 
         bool follow(chained_coro* curr)
@@ -44,7 +49,10 @@ namespace art::detail
                 if (_then.compare_exchange_weak(next, curr, std::memory_order_release, std::memory_order_acquire))
                     return true;
             }
-            return false;
+            if (_tag != tag::pending)
+                return false;
+            curr->coro.destroy();
+            return true;
         }
     };
 }
@@ -63,10 +71,10 @@ namespace art
 
         shared_task(shared_task&&) = default;
 
-        shared_task(shared_task const& other) noexcept : base_type(other._promise)
+        shared_task(shared_task const& other) noexcept : base_type(other._state)
         {
-            if (auto promise = this->_promise)
-                promise->_use_count.fetch_add(1u, std::memory_order_relaxed);
+            if (auto state = this->_state)
+                state->_use_count.fetch_add(1u, std::memory_order_relaxed);
         }
 
         shared_task(task<T>&& other)
@@ -83,26 +91,26 @@ namespace art
         {
             struct awaiter
             {
-                typename base_type::promise_type* _promise;
+                typename base_type::state* _state;
                 detail::chained_coro _chained;
 
                 bool await_ready() const noexcept
                 {
-                    return !_promise->_then.load(std::memory_order_acquire);
+                    return _state->is_ready();
                 }
 
                 bool await_suspend(coroutine_handle<> cb) noexcept
                 {
                     _chained.coro = cb;
-                    return _promise->follow(&_chained);
+                    return _state->follow(&_chained);
                 }
 
                 detail::cref_t<T> await_resume() const
                 {
-                    return _promise->get();
+                    return _state->get();
                 }
             };
-            return awaiter{this->_promise};
+            return awaiter{this->_state};
         }
     };
 

@@ -14,35 +14,92 @@
 #include <system_error>
 #include <type_traits>
 #include <condition_variable>
-#include <art/coroutine.hpp>
+#include <art/core.hpp>
 
 namespace art::blocking_detail
 {
-    struct promise_base
+    struct state
     {
-        coro_ts::suspend_never initial_suspend() noexcept
+        void report_error()
         {
-            return {};
+            if (e)
+                std::rethrow_exception(std::move(e));
+            if (!returned)
+                throw std::system_error(std::make_error_code(std::errc::operation_canceled));
         }
 
-        void return_void() noexcept
+        void notify()
+        {
+            {
+                std::unique_lock<std::mutex> lock(mtx);
+                ready = true;
+            }
+            cond.notify_one();
+        }
+
+        void wait()
         {
             std::unique_lock<std::mutex> lock(mtx);
-            ready = true;
+            while (!ready)
+                cond.wait(lock);
+            report_error();
         }
 
         std::mutex mtx;
         std::condition_variable cond;
+        std::exception_ptr e;
+        bool returned = false;
         bool ready = false;
+    };
+
+    struct timed_state : state
+    {
+        template<class Clock, class Duration>
+        bool wait_until(std::chrono::time_point<Clock, Duration> const& timeout_time)
+        {
+            std::unique_lock<std::mutex> lock(mtx);
+            while (!ready)
+            {
+                if (cond.wait_until(lock, timeout_time) == std::cv_status::timeout)
+                    return false;
+            }
+            report_error();
+            return true;
+        }
+
+        std::atomic_flag last_owner = ATOMIC_FLAG_INIT;
+    };
+
+    struct promise_base
+    {
+        coro_ts::suspend_never final_suspend() noexcept
+        {
+            return {};
+        }
+        void return_void() noexcept
+        {
+            _state->returned = true;
+        }
+
+        void unhandled_exception() noexcept
+        {
+            _state->e = std::current_exception();
+        }
+
+        state* _state;
     };
 
     struct task
     {
         struct promise_type : promise_base
         {
-            coro_ts::suspend_always final_suspend() noexcept
+            ~promise_type()
             {
-                cond.notify_one();
+                _state->notify();
+            }
+
+            coro_ts::suspend_always initial_suspend() noexcept
+            {
                 return {};
             }
 
@@ -50,31 +107,21 @@ namespace art::blocking_detail
             {
                 return task(coroutine_handle<promise_type>::from_promise(*this));
             }
-
-            void wait()
-            {
-                std::unique_lock<std::mutex> lock(mtx);
-                while (!ready)
-                    cond.wait(lock);
-            }
         };
 
         explicit task(coroutine_handle<promise_type> coro) : coro(coro) {}
-
-        struct finalizer
-        {
-            coroutine_handle<promise_type> coro;
-
-            ~finalizer()
-            {
-                coro.destroy();
-            }
-        };
 
         template<class Awaitable>
         static task run(Awaitable& a)
         {
             co_await suspend([&](auto c) { return a.await_suspend(c); });
+        }
+
+        void wait(state& s)
+        {
+            coro.promise()._state = &s;
+            coro.resume();
+            s.wait();
         }
 
         coroutine_handle<promise_type> coro;
@@ -84,42 +131,40 @@ namespace art::blocking_detail
     {
         struct promise_type : promise_base
         {
-            detail::suspend_if final_suspend() noexcept
+            promise_type()
             {
-                cond.notify_one();
-                return !last_owner.test_and_set(std::memory_order_relaxed);
+                _state = new timed_state;
+            }
+
+            ~promise_type()
+            {
+                auto state = static_cast<timed_state*>(_state);
+                state->notify();
+                if (state->last_owner.test_and_set(std::memory_order_relaxed))
+                    delete state;
+            }
+
+            coro_ts::suspend_never initial_suspend() noexcept
+            {
+                return {};
             }
 
             timed_task get_return_object()
             {
-                return timed_task(coroutine_handle<promise_type>::from_promise(*this));
+                return timed_task(static_cast<timed_state*>(_state));
             }
-
-            template<class Clock, class Duration>
-            bool wait_until(std::chrono::time_point<Clock, Duration> const& timeout_time)
-            {
-                std::unique_lock<std::mutex> lock(mtx);
-                while (!ready)
-                {
-                    if (cond.wait_until(lock, timeout_time) == std::cv_status::timeout)
-                        break;
-                }
-                return !!ready;
-            }
-
-            std::atomic_flag last_owner = ATOMIC_FLAG_INIT;
         };
 
-        explicit timed_task(coroutine_handle<promise_type> coro) : coro(coro) {}
+        explicit timed_task(timed_state* state) : state(state) {}
 
         struct finalizer
         {
-            coroutine_handle<promise_type> coro;
+            timed_state* state;
 
             ~finalizer()
             {
-                if (coro.promise().last_owner.test_and_set(std::memory_order_relaxed))
-                    coro.destroy();
+                if (state->last_owner.test_and_set(std::memory_order_relaxed))
+                    delete state;
             }
         };
 
@@ -129,14 +174,17 @@ namespace art::blocking_detail
             co_await suspend([&](auto c) { return a.await_suspend(c); });
         }
 
-        coroutine_handle<promise_type> coro;
+        timed_state* state;
     };
 
     template<class A>
     inline A&& wait(A&& a)
     {
         if (!a.await_ready())
-            task::finalizer{task::run(a).coro}.coro.promise().wait();
+        {
+            state s;
+            task::run(a).wait(s);
+        }
         return std::forward<A>(a);
     }
 
@@ -146,8 +194,8 @@ namespace art::blocking_detail
         if (a.await_ready())
             return true;
 
-        return timed_task::finalizer{timed_task::run<A>(std::forward<A>(a)).coro}.
-            coro.promise().wait_until(timeout_time);
+        return timed_task::finalizer{timed_task::run<A>(std::forward<A>(a)).state}.
+            state->wait_until(timeout_time);
     }
 }
 

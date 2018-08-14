@@ -49,21 +49,22 @@ namespace art::detail
         void await_resume() const noexcept {}
     };
 
-    template<class T>
-    struct extract_promise
+    template<class State>
+    struct extract_state
     {
-        using P = typename T::promise_type;
+        State*& p;
 
-        P*& p;
+        State* operator->() const noexcept { return p; }
 
-        P* operator->() const noexcept { return p; }
-
-        ~extract_promise()
+        ~extract_state()
         {
-            coroutine_handle<P>::from_promise(*p).destroy();
+            delete p;
             p = nullptr;
         }
     };
+
+    template<class State>
+    extract_state(State*&) -> extract_state<State>;
 
     struct chained_coro
     {

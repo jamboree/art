@@ -12,6 +12,7 @@
 #include <vector>
 #include <memory>
 #include <art/task.hpp>
+#include <art/detached_task.hpp>
 #include <art/detail/copy_or_move.hpp>
 
 namespace art
@@ -25,35 +26,15 @@ namespace art
 
     namespace detail
     {
-        struct detached
-        {
-            struct promise_type
-            {
-                detached get_return_object() noexcept { return{}; }
-
-                coro_ts::suspend_never initial_suspend() noexcept
-                {
-                    return {};
-                }
-
-                coro_ts::suspend_never final_suspend() noexcept
-                {
-                    return {};
-                }
-
-                void return_void() noexcept {}
-            };
-        };
-
         template<class A, class State>
-        detached wait_any_at(std::size_t i, A a, std::shared_ptr<State> state)
+        detached_task wait_any_at(std::size_t i, A a, std::shared_ptr<State> state)
         {
             co_await suspend([&](auto c) { return a.await_suspend(c); });
             state->set_ready(i);
         }
             
         template<class A, std::size_t I, class State>
-        detached wait_any_at(std::integral_constant<std::size_t, I>, A a, std::shared_ptr<State> state)
+        detached_task wait_any_at(std::integral_constant<std::size_t, I>, A a, std::shared_ptr<State> state)
         {
             co_await suspend([&](auto c) { return a.await_suspend(c); });
             state->set_ready(I);
@@ -84,7 +65,8 @@ namespace art
 
             ~when_any_state()
             {
-                coroutine_handle<>::from_address(coro.load(std::memory_order_relaxed)).destroy();
+                if (auto p = coro.load(std::memory_order_relaxed))
+                    coroutine_handle<>::from_address(p).destroy();
             }
 
             void set_ready(std::size_t i)

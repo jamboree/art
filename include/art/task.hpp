@@ -13,7 +13,7 @@
 
 namespace art::detail
 {
-    struct unique_promise_base : promise_base
+    struct unique_promise_base
     {
         std::atomic<void*> _then{this};
         tag _tag{tag::pending};
@@ -23,16 +23,22 @@ namespace art::detail
             return !_then.exchange(nullptr, std::memory_order_acquire);
         }
 
-        suspend_if final_suspend() noexcept
+        bool finalize() noexcept
         {
             auto then = _then.exchange(nullptr, std::memory_order_acq_rel);
             if (then != this)
             {
                 if (!then) // Task is destroyed, we're the last owner.
                     return false;
-                coroutine_handle<>::from_address(then)();
+                auto coro = coroutine_handle<>::from_address(then);
+                _tag == tag::pending ? coro.destroy() : coro();
             }
             return true; // We're done. Let the task do the cleanup.
+        }
+
+        bool is_ready() const
+        {
+            return !_then.load(std::memory_order_acquire) && _tag != tag::pending;
         }
 
         bool follow(coroutine_handle<> cb)
@@ -51,7 +57,10 @@ namespace art::detail
                 }
                 assert(!last && "multiple coroutines await on same task");
             }
-            return false;
+            if (_tag != tag::pending)
+                return false;
+            cb.destroy();
+            return true;
         }
     };
 }
@@ -74,17 +83,17 @@ namespace art
 
         bool await_ready() const noexcept
         {
-            return !this->_promise->_then.load(std::memory_order_acquire);
+            return this->_state->is_ready();
         }
 
         bool await_suspend(coroutine_handle<> cb) const noexcept
         {
-            return this->_promise->follow(cb);
+            return this->_state->follow(cb);
         }
 
         T await_resume()
         {
-            return detail::extract_promise<task>{this->_promise}->get();
+            return detail::extract_state{this->_state}->get();
         }
 
         shared_task<T> share()

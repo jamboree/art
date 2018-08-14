@@ -9,7 +9,7 @@
 
 #include <atomic>
 #include <type_traits>
-#include <art/detail/core.hpp>
+#include <art/core.hpp>
 #include <art/detail/storage.hpp>
 
 namespace art
@@ -29,62 +29,78 @@ namespace art::detail
         {
             return {};
         }
+
+        coro_ts::suspend_never final_suspend() noexcept
+        {
+            return {};
+        }
     };
 
     template<class T, class Base>
-    struct promise_data : Base
+    struct promise_data : promise_base
     {
         using val_t = wrap_reference_t<T>;
 
         template<class U = T>
         void return_value(U&& u)
         {
-            new(&_data.value) val_t(std::forward<U>(u));
-            Base::_tag = tag::value;
+            //_data->return_value(std::forward<U>(u));
+            new(&_state->_data.value) val_t(std::forward<U>(u));
+            _state->_tag = tag::value;
         }
 
         void unhandled_exception() noexcept
         {
-            new(&_data.exception) std::exception_ptr(std::current_exception());
-            Base::_tag = tag::exception;
+            new(&_state->_data.exception) std::exception_ptr(std::current_exception());
+            _state->_tag = tag::exception;
         }
 
-        T&& get()
+        struct state : Base
         {
-            if (Base::_tag == tag::exception)
-                std::rethrow_exception(_data.exception);
-            return static_cast<T&&>(_data.value);
-        }
+            T&& get()
+            {
+                if (Base::_tag == tag::exception)
+                    std::rethrow_exception(_data.exception);
+                return static_cast<T&&>(_data.value);
+            }
 
-        ~promise_data()
-        {
-            _data.destroy(Base::_tag);
-        }
+            ~state()
+            {
+                _data.destroy(Base::_tag);
+            }
 
-        storage<val_t> _data;
+            storage<val_t> _data;
+        };
+
+        state* _state;
     };
 
     template<class Base>
-    struct promise_data<void, Base> : Base
+    struct promise_data<void, Base> : promise_base
     {
         void return_void() noexcept
         {
-            Base::_tag = tag::value;
+            _state->_tag = tag::value;
         }
 
         void unhandled_exception() noexcept
         {
-            _e = std::current_exception();
-            Base::_tag = tag::exception;
+            _state->_e = std::current_exception();
+            _state->_tag = tag::exception;
         }
 
-        void get()
+        struct state : Base
         {
-            if (Base::_tag == tag::exception)
-                std::rethrow_exception(_e);
-        }
+            void get()
+            {
+                if (Base::_tag == tag::exception)
+                    std::rethrow_exception(_e);
+            }
 
-        std::exception_ptr _e;
+            std::exception_ptr _e;
+        };
+
+        state* _state;
     };
 
     template<class Derived, class Promise>
@@ -95,68 +111,81 @@ namespace art::detail
     {
         struct promise_type : promise_data<T, Promise>
         {
+            promise_type()
+            {
+                this->_state = new state;
+            }
+
+            ~promise_type()
+            {
+                if (!this->_state->finalize())
+                    delete this->_state;
+            }
+
             Task<T> get_return_object()
             {
-                return Task<T>(this);
+                return Task<T>(this->_state);
             }
         };
 
-        impl() noexcept : _promise() {}
+        impl() noexcept : _state() {}
 
-        impl(impl&& other) noexcept : _promise(other._promise)
+        impl(impl&& other) noexcept : _state(other._state)
         {
-            other._promise = nullptr;
+            other._state = nullptr;
         }
 
         impl& operator=(impl&& other) noexcept
         {
-            if (_promise)
+            if (_state)
                 release();
-            _promise = other._promise;
-            other._promise = nullptr;
+            _state = other._state;
+            other._state = nullptr;
             return *this;
         }
 
-        explicit impl(promise_type* promise) noexcept : _promise(promise) {}
-
         ~impl()
         {
-            if (_promise)
+            if (_state)
                 release();
         }
 
         explicit operator bool() const noexcept
         {
-            return !!_promise;
+            return !!_state;
         }
 
         bool valid() const noexcept
         {
-            return !!_promise;
+            return !!_state;
         }
 
         void swap(Task<T>& other) noexcept
         {
-            std::swap(_promise, other._promise);
+            std::swap(_state, other._state);
         }
 
         void reset() noexcept
         {
-            if (_promise)
+            if (_state)
             {
                 release();
-                _promise = nullptr;
+                _state = nullptr;
             }
         }
 
     protected:
+        using state = typename promise_data<T, Promise>::state;
+
+        explicit impl(state* s) noexcept : _state(s) {}
+
         void release() noexcept
         {
-            if (_promise->test_last())
-                coroutine_handle<promise_type>::from_promise(*_promise).destroy();
+            if (_state->test_last())
+                delete _state;
         }
 
-        promise_type* _promise;
+        state* _state;
     };
 
     template<class ToTask, class FromTask>
