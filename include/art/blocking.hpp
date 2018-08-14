@@ -22,8 +22,6 @@ namespace art::blocking_detail
     {
         void report_error()
         {
-            if (e)
-                std::rethrow_exception(std::move(e));
             if (!returned)
                 throw std::system_error(std::make_error_code(std::errc::operation_canceled));
         }
@@ -47,7 +45,6 @@ namespace art::blocking_detail
 
         std::mutex mtx;
         std::condition_variable cond;
-        std::exception_ptr e;
         bool returned = false;
         bool ready = false;
     };
@@ -81,10 +78,7 @@ namespace art::blocking_detail
             _state->returned = true;
         }
 
-        void unhandled_exception() noexcept
-        {
-            _state->e = std::current_exception();
-        }
+        void unhandled_exception() noexcept { std::terminate(); }
 
         state* _state;
     };

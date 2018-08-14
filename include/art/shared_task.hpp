@@ -26,11 +26,12 @@ namespace art::detail
         bool finalize() noexcept
         {
             auto next = _then.exchange(nullptr, std::memory_order_acq_rel);
+            auto const call = _tag == tag::pending ? coroutine_final_cancel : coroutine_final_run;
             while (next != this)
             {
                 auto then = static_cast<chained_coro*>(next);
                 next = then->next;
-                _tag == tag::pending ? then->coro.destroy() : then->coro();
+                call(then);
             }
             return _use_count.fetch_sub(1u, std::memory_order_release) != 1u;
         }
@@ -51,7 +52,7 @@ namespace art::detail
             }
             if (_tag != tag::pending)
                 return false;
-            curr->coro.destroy();
+            coroutine_final_cancel(curr);
             return true;
         }
     };

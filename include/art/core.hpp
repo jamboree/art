@@ -72,6 +72,49 @@ namespace art::detail
         void* next;
     };
 
+    template<class F>
+    void coroutine_local_sched(chained_coro* then, F f) noexcept
+    {
+        thread_local chained_coro** chain = nullptr;
+        if (chain)
+        {
+            auto& next = *chain;
+            then->next = next;
+            next = then;
+        }
+        else
+        {
+            chain = &then;
+            {
+                auto coro = then->coro;
+                then = nullptr;
+                f(coro);
+            }
+            while (then)
+            {
+                auto coro = then->coro;
+                then = static_cast<chained_coro*>(then->next);
+                f(coro);
+            }
+            chain = nullptr;
+        }
+    }
+
+    inline void coroutine_final_run(chained_coro* then) noexcept
+    {
+        coroutine_local_sched(then, [](coroutine_handle<> coro) { coro(); });
+    }
+
+    inline void coroutine_final_cancel(chained_coro* then) noexcept
+    {
+        coroutine_local_sched(then, [](coroutine_handle<> coro) { coro.destroy(); });
+    }
+
+    inline void coroutine_final_call(chained_coro* then, bool cancel) noexcept
+    {
+        cancel ? coroutine_final_cancel(then) : coroutine_final_run(then);
+    }
+
     template<unsigned N>
     struct priority : priority<N - 1> {};
 

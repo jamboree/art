@@ -30,8 +30,7 @@ namespace art::detail
             {
                 if (!then) // Task is destroyed, we're the last owner.
                     return false;
-                auto coro = coroutine_handle<>::from_address(then);
-                _tag == tag::pending ? coro.destroy() : coro();
+                coroutine_final_call(static_cast<chained_coro*>(then), _tag == tag::pending);
             }
             return true; // We're done. Let the task do the cleanup.
         }
@@ -41,25 +40,24 @@ namespace art::detail
             return !_then.load(std::memory_order_acquire) && _tag != tag::pending;
         }
 
-        bool follow(coroutine_handle<> cb)
+        bool follow(chained_coro* cb)
         {
             void* last = this;
-            if (_then.compare_exchange_strong(last, cb.address(), std::memory_order_release, std::memory_order_acquire))
+            if (_then.compare_exchange_strong(last, cb, std::memory_order_release, std::memory_order_acquire))
                 return true;
-            // If there's a previous waiter, just cancel it because it's only
-            // allowed for when_any.
+            // If there's a previous waiter, just cancel it.
             if (last)
             {
-                if (_then.compare_exchange_strong(last, cb.address(), std::memory_order_acq_rel))
+                if (_then.compare_exchange_strong(last, cb, std::memory_order_acq_rel))
                 {
-                    coroutine_handle<>::from_address(last).destroy();
+                    coroutine_final_cancel(static_cast<chained_coro*>(last));
                     return true;
                 }
                 assert(!last && "multiple coroutines await on same task");
             }
             if (_tag != tag::pending)
                 return false;
-            cb.destroy();
+            coroutine_final_cancel(cb);
             return true;
         }
     };
@@ -81,19 +79,30 @@ namespace art
 
         task& operator=(task&& other) = default;
 
-        bool await_ready() const noexcept
+        auto operator co_await() noexcept
         {
-            return this->_state->is_ready();
-        }
+            struct awaiter
+            {
+                typename base_type::state*& _state;
+                detail::chained_coro _chained;
 
-        bool await_suspend(coroutine_handle<> cb) const noexcept
-        {
-            return this->_state->follow(cb);
-        }
+                bool await_ready() const noexcept
+                {
+                    return _state->is_ready();
+                }
 
-        T await_resume()
-        {
-            return detail::extract_state{this->_state}->get();
+                bool await_suspend(coroutine_handle<> cb) noexcept
+                {
+                    _chained.coro = cb;
+                    return _state->follow(&_chained);
+                }
+
+                T await_resume() const
+                {
+                    return detail::extract_state{_state}->get();
+                }
+            };
+            return awaiter{this->_state};
         }
 
         shared_task<T> share()
