@@ -92,8 +92,11 @@ namespace art
         {
             struct awaiter
             {
-                typename base_type::state* _state;
+                using state = typename base_type::state;
+                state* _state;
                 detail::chained_coro _chained;
+
+                explicit awaiter(state* s) noexcept : _state(s) {}
 
                 bool await_ready() const noexcept
                 {
