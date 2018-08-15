@@ -18,14 +18,14 @@ namespace art::detail
     task<std::vector<T>> when_all_impl(std::vector<T> seq)
     {
         for (auto& elem : seq)
-            co_await ready(get_awaiter(elem));
+            co_await when_ready(get_awaiter(elem));
         co_return std::move(seq);
     }
 
     template<class... T, std::size_t... I>
     task<std::tuple<T...>> when_all_impl(std::tuple<T...> seq, std::index_sequence<I...>)
     {
-        (co_await ready(get_awaiter(std::get<I>(seq))), ...);
+        (co_await when_ready(get_awaiter(std::get<I>(seq))), ...);
         co_return std::move(seq);
     }
 }

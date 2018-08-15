@@ -138,25 +138,6 @@ namespace art::detail
     {
         return std::forward<A>(a);
     }
-
-    template<class Task>
-    struct ready_awaiter
-    {
-        Task task;
-
-        bool await_ready()
-        {
-            return task.await_ready();
-        }
-
-        template<class P>
-        auto await_suspend(coroutine_handle<P> c) -> decltype(task.await_suspend(c))
-        {
-            return task.await_suspend(c);
-        }
-
-        void await_resume() noexcept {}
-    };
 }
 
 namespace art
@@ -168,17 +149,37 @@ namespace art
     }
 
     template<class Task>
-    inline detail::ready_awaiter<Task> ready(Task&& task)
+    class when_ready
     {
-        return {std::forward<Task>(task)};
-    }
+        Task _task;
+
+    public:
+        explicit when_ready(Task&& task) : _task(std::forward<Task>(task)) {}
+
+        bool await_ready()
+        {
+            return _task.await_ready();
+        }
+
+        template<class P>
+        auto await_suspend(coroutine_handle<P> c) -> decltype(_task.await_suspend(c))
+        {
+            return _task.await_suspend(c);
+        }
+
+        void await_resume() noexcept {}
+    };
+
+    template<class Task>
+    when_ready(Task&& task) -> when_ready<Task>;
 
     template<class F>
-    struct suspend
+    class suspend
     {
         F _f;
 
-        suspend(F f) noexcept : _f(std::move(f)) {}
+    public:
+        explicit suspend(F f) : _f(std::move(f)) {}
 
         bool await_ready() const noexcept
         {
