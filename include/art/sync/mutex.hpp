@@ -10,15 +10,19 @@
 #include <atomic>
 #include <cassert>
 #include <art/core.hpp>
+#include <art/detail/unlock_guard.hpp>
 
 namespace art
 {
     class mutex
     {
         std::atomic<void*> _then;
+        executor& _exe;
 
     public:
-        constexpr mutex() : _then{nullptr} {}
+        explicit mutex(executor& exe = default_executor())
+          : _then{nullptr}, _exe(exe)
+        {}
 
         // Non-copyable.
         mutex(mutex const&) = delete;
@@ -61,22 +65,7 @@ namespace art
             {
                 next = static_cast<detail::chained_coro*>(curr)->next;
             } while (!_then.compare_exchange_weak(curr, next, std::memory_order_acq_rel));
-            static_cast<detail::chained_coro*>(curr)->coro();
-        }
-    };
-
-    template<class Lock>
-    struct unlock_guard
-    {
-        Lock& lock;
-
-        explicit unlock_guard(Lock& lock) : lock(lock) {}
-        unlock_guard(unlock_guard const&) = delete;
-        unlock_guard& operator=(unlock_guard const&) = delete;
-
-        ~unlock_guard()
-        {
-            lock.unlock();
+            _exe(static_cast<detail::chained_coro*>(curr));
         }
     };
 

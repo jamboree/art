@@ -194,6 +194,30 @@ namespace art
 
         void await_resume() const noexcept {}
     };
+
+    struct executor
+    {
+       virtual void operator()(coroutine_handle<> c) = 0;
+       virtual void operator()(detail::chained_coro* c) { operator()(c->coro); }
+    };
+
+    inline executor& default_executor() noexcept
+    {
+        struct local_executor final : executor
+        {
+            void operator()(coroutine_handle<> c) override
+            {
+                c();
+            }
+
+            void operator()(detail::chained_coro* c) override
+            {
+                detail::coroutine_final_run(c);
+            }
+        };
+        static local_executor exe;
+        return exe;
+    }
 }
 
 #endif
