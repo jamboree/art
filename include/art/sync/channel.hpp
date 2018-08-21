@@ -7,21 +7,108 @@
 #ifndef ART_SYNC_CHANNEL_HPP_INCLUDED
 #define ART_SYNC_CHANNEL_HPP_INCLUDED
 
+#include <new>
 #include <atomic>
 #include <optional>
 #include <art/core.hpp>
+#include <art/detail/spinlock.hpp>
+#include <art/detail/unlock_guard.hpp>
+
+namespace art::detail
+{
+    struct buffer_head
+    {
+        spinlock _lock;
+        std::size_t _used;
+        std::size_t _head;
+        std::size_t _size;
+
+        explicit buffer_head(std::size_t size) : _used(), _head(), _size(size) {}
+
+        std::size_t try_push() noexcept
+        {
+            if (_used == _size)
+                return 0;
+            return (_head + _used) % _size + 1;
+        }
+
+        std::size_t try_pop() noexcept
+        {
+            if (!_used)
+                return 0;
+            auto curr = _head + 1;
+            _head = curr % _size;
+            return curr;
+        }
+    };
+
+    template<class T>
+    struct alignas(std::max(alignof(T), alignof(buffer_head))) channel_buffer : buffer_head
+    {
+        using buffer_head::buffer_head;
+
+        T* data() noexcept
+        {
+            auto p = reinterpret_cast<char*>(this) + sizeof(channel_buffer);
+            return reinterpret_cast<T*>(p);
+        }
+
+        static channel_buffer* create(std::size_t size)
+        {
+            if (!size)
+                return nullptr;
+            auto p = ::operator new(sizeof(channel_buffer) + size * sizeof(T), std::align_val_t(alignof(channel_buffer)));
+            return new(p) channel_buffer(size);
+        }
+
+        void destroy() noexcept
+        {
+            while (_used)
+            {
+                auto curr = _head;
+                data()[curr].~T();
+                --_used;
+                _head = (curr + 1) % _size;
+            }
+            ::operator delete(this, std::align_val_t(alignof(channel_buffer)));
+        }
+    };
+
+    template<class T>
+    struct data_extactor
+    {
+        T& data;
+
+        ~data_extactor()
+        {
+            data.~T();
+        }
+    };
+}
 
 namespace art
 {
     template<class T>
     struct channel
     {
+        explicit channel(executor& exe = default_executor()) noexcept : _buf(), _exe(exe) {}
+
+        explicit channel(std::size_t buf_size, executor& exe = default_executor())
+          : _buf(buffer::create(buf_size)), _exe(exe)
+        {}
+
+        ~channel()
+        {
+            if (_buf)
+                _buf->destroy();
+        }
+
         void close() noexcept
         {
             if (auto p = _side.exchange(this, std::memory_order_acquire))
             {
                 if (p != this)
-                    static_cast<awaiter_base*>(p)->_coro();
+                    _exe(static_cast<awaiter_base*>(p)->_coro);
             }
         }
 
@@ -41,7 +128,7 @@ namespace art
                         if (_self->_side.compare_exchange_strong(p, nullptr, std::memory_order_relaxed))
                         {
                             other->_data = std::move(_data);
-                            other->_coro();
+                            _self->_exe(other->_coro);
                         }
                     }
                     return false;
@@ -52,6 +139,30 @@ namespace art
                     return !_data;
                 }
             };
+            if (_buf)
+            {
+                _buf->_lock.lock();
+                if (auto side = _side.load(std::memory_order_relaxed))
+                {
+                    if (side == this || !_side.compare_exchange_strong(side, nullptr, std::memory_order_relaxed))
+                    {
+                        _buf->_lock.unlock();
+                        return awaiter{nullptr, {}, std::move(val)};
+                    }
+                    _buf->_lock.unlock();
+                    auto other = static_cast<awaiter_base*>(side);
+                    other->_data = std::move(val);
+                    _exe(other->_coro);
+                    return awaiter{};
+                }
+                unlock_guard unlock(_buf->_lock);
+                if (auto idx = _buf->try_push())
+                {
+                    new(_buf->data() + (idx - 1)) T(std::move(val));
+                    ++_buf->_used;
+                    return awaiter{};
+                }
+            }
             return awaiter{this, {}, std::move(val)};
         }
 
@@ -71,7 +182,7 @@ namespace art
                         if (_self->_side.compare_exchange_strong(p, nullptr, std::memory_order_relaxed))
                         {
                             _data = std::move(other->_data);
-                            other->_coro();
+                            _self->_exe(other->_coro);
                         }
                     }
                     return false;
@@ -82,10 +193,36 @@ namespace art
                     return std::move(_data);
                 }
             };
+            if (_buf)
+            {
+                _buf->_lock.lock();
+                if (auto idx = _buf->try_pop())
+                {
+                    if (auto side = _side.load(std::memory_order_relaxed))
+                    {
+                        if (side != this && _side.compare_exchange_strong(side, nullptr, std::memory_order_relaxed))
+                        {
+                            _buf->_lock.unlock();
+                            auto other = static_cast<awaiter_base*>(side);
+                            T tmp = std::exchange(_buf->data()[idx - 1], *other->_data);
+                            other->_data = std::nullopt;
+                            _exe(other->_coro);
+                            return awaiter{nullptr, {}, std::move(tmp)};
+                        }
+                    }
+                    --_buf->_used;
+                    unlock_guard unlock(_buf->_lock);
+                    detail::data_extactor<T> ex{_buf->data()[idx - 1]};
+                    return awaiter{nullptr, {}, std::move(ex.data)};
+                }
+                _buf->_lock.unlock();
+            }
             return awaiter{this, {}, {}};
         }
 
     private:
+        using buffer = detail::channel_buffer<T>;
+
         struct awaiter_base
         {
             channel* _self;
@@ -94,10 +231,12 @@ namespace art
 
             bool await_ready() const noexcept
             {
-                return false;
+                return !_self;
             }
         };
 
+        buffer* _buf;
+        executor& _exe;
         std::atomic<void*> _side{nullptr};
     };
 }
