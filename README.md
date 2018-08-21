@@ -1,4 +1,4 @@
-art [![Try it online][badge.wandbox]](https://wandbox.org/permlink/hmAvoFxki0N6FN80)
+art [![Try it online][badge.wandbox]](https://wandbox.org/permlink/9nXOoNp9EAkdv7Ag)
 ===
 >_**A**sync **R**esult **T**ype_
 

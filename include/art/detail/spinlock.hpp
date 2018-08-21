@@ -13,10 +13,10 @@ namespace art::detail
 {
     class spinlock
     {
-        std::atomic_flag _flag;
+        std::atomic_flag _flag = ATOMIC_FLAG_INIT;
 
     public:
-        spinlock() noexcept : _flag{ATOMIC_FLAG_INIT} {}
+        spinlock() = default;
         spinlock(spinlock const&) = delete;
         spinlock& operator=(spinlock const&) = delete;
 

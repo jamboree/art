@@ -4,6 +4,8 @@
 #include <art/blocking.hpp>
 #include <art/sync/when_any.hpp>
 #include <art/sync/when_all.hpp>
+#include <art/sync/channel.hpp>
+#include <art/sync/mutex.hpp>
 
 art::task<int> stall(art::coroutine_handle<>& ret)
 {
@@ -28,6 +30,24 @@ art::task<> subtask(art::task<int> t)
 {
     Resource res;
     co_await t;
+}
+
+art::task<> writer(art::channel<int>& ch)
+{
+    for (int i = 0; i != 5; ++i)
+    {
+        co_await ch.push(i);
+        std::cout << "pushed: " << i << "\n";
+    }
+    ch.close();
+}
+
+art::task<> reader(art::channel<int>& ch)
+{
+    while (auto v = co_await ch.pop())
+    {
+        std::cout << "poped: " << *v << "\n";
+    }
 }
 
 int main()
@@ -79,6 +99,15 @@ int main()
             std::cout << "timeout\n";
         c();
         std::cout << "ans: " << get(t);
+        std::cout << "\n------------\n";
+    }
+    {
+        // By default, channel is unbuffered. To use buffering,
+        // simply specify the number in the ctor.
+        std::cout << "[channel]\n";
+        art::channel<int> ch;
+        writer(ch);
+        reader(ch);
         std::cout << "\n------------\n";
     }
 }

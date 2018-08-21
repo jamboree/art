@@ -118,25 +118,15 @@ namespace art
             {
                 bool await_suspend(coroutine_handle<> coro) noexcept
                 {
-                    _coro = coro;
-                    void* p = nullptr;
-                    if (_self->_side.compare_exchange_strong(p, this, std::memory_order_release, std::memory_order_acquire))
-                        return true;
-                    if (p != _self)
+                    return this->do_suspend(coro, [](std::optional<T>& here, std::optional<T>& there)
                     {
-                        auto other = static_cast<awaiter_base*>(p);
-                        if (_self->_side.compare_exchange_strong(p, nullptr, std::memory_order_relaxed))
-                        {
-                            other->_data = std::move(_data);
-                            _self->_exe(other->_coro);
-                        }
-                    }
-                    return false;
+                        there = std::move(here);
+                    });
                 }
 
                 bool await_resume() const noexcept
                 {
-                    return !_data;
+                    return !this->_data;
                 }
             };
             if (_buf)
@@ -147,7 +137,7 @@ namespace art
                     if (side == this || !_side.compare_exchange_strong(side, nullptr, std::memory_order_relaxed))
                     {
                         _buf->_lock.unlock();
-                        return awaiter{nullptr, {}, std::move(val)};
+                        return awaiter{{nullptr, {}, std::move(val)}};
                     }
                     _buf->_lock.unlock();
                     auto other = static_cast<awaiter_base*>(side);
@@ -163,7 +153,7 @@ namespace art
                     return awaiter{};
                 }
             }
-            return awaiter{this, {}, std::move(val)};
+            return awaiter{{this, {}, std::move(val)}};
         }
 
         [[nodiscard]] auto pop()
@@ -172,25 +162,15 @@ namespace art
             {
                 bool await_suspend(coroutine_handle<> coro) noexcept
                 {
-                    _coro = coro;
-                    void* p = nullptr;
-                    if (_self->_side.compare_exchange_strong(p, this, std::memory_order_release, std::memory_order_acquire))
-                        return true;
-                    if (p != _self)
+                    return this->do_suspend(coro, [](std::optional<T>& here, std::optional<T>& there)
                     {
-                        auto other = static_cast<awaiter_base*>(p);
-                        if (_self->_side.compare_exchange_strong(p, nullptr, std::memory_order_relaxed))
-                        {
-                            _data = std::move(other->_data);
-                            _self->_exe(other->_coro);
-                        }
-                    }
-                    return false;
+                        here = std::move(there);
+                    });
                 }
 
                 std::optional<T> await_resume() noexcept
                 {
-                    return std::move(_data);
+                    return std::move(this->_data);
                 }
             };
             if (_buf)
@@ -207,17 +187,17 @@ namespace art
                             T tmp = std::exchange(_buf->data()[idx - 1], *other->_data);
                             other->_data = std::nullopt;
                             _exe(other->_coro);
-                            return awaiter{nullptr, {}, std::move(tmp)};
+                            return awaiter{{nullptr, {}, std::move(tmp)}};
                         }
                     }
                     --_buf->_used;
                     unlock_guard unlock(_buf->_lock);
                     detail::data_extactor<T> ex{_buf->data()[idx - 1]};
-                    return awaiter{nullptr, {}, std::move(ex.data)};
+                    return awaiter{{nullptr, {}, std::move(ex.data)}};
                 }
                 _buf->_lock.unlock();
             }
-            return awaiter{this, {}, {}};
+            return awaiter{{this, {}, {}}};
         }
 
     private:
@@ -232,6 +212,25 @@ namespace art
             bool await_ready() const noexcept
             {
                 return !_self;
+            }
+
+            template<class F>
+            bool do_suspend(coroutine_handle<> coro, F f) noexcept
+            {
+                _coro = coro;
+                void* p = nullptr;
+                if (_self->_side.compare_exchange_strong(p, this, std::memory_order_release, std::memory_order_acquire))
+                    return true;
+                if (p != _self)
+                {
+                    auto other = static_cast<awaiter_base*>(p);
+                    if (_self->_side.compare_exchange_strong(p, nullptr, std::memory_order_relaxed))
+                    {
+                        f(_data, other->_data);
+                        _self->_exe(other->_coro);
+                    }
+                }
+                return false;
             }
         };
 
