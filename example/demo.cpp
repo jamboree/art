@@ -5,6 +5,7 @@
 #include <art/sync/when_any.hpp>
 #include <art/sync/when_all.hpp>
 #include <art/sync/channel.hpp>
+#include <art/sync/buffered_channel.hpp>
 #include <art/sync/mutex.hpp>
 
 art::task<int> stall(art::coroutine_handle<>& ret)
@@ -32,7 +33,8 @@ art::task<> subtask(art::task<int> t)
     co_await t;
 }
 
-art::task<> writer(art::channel<int>& ch)
+template<class Channel>
+art::task<> writer(Channel& ch)
 {
     for (int i = 0; i != 5; ++i)
     {
@@ -42,11 +44,12 @@ art::task<> writer(art::channel<int>& ch)
     ch.close();
 }
 
-art::task<> reader(art::channel<int>& ch)
+template<class Channel>
+art::task<> reader(Channel& ch)
 {
     while (auto v = co_await ch.pop())
     {
-        std::cout << "poped: " << *v << "\n";
+        std::cout << "popped: " << *v << "\n";
     }
 }
 
@@ -102,10 +105,17 @@ int main()
         std::cout << "\n------------\n";
     }
     {
-        // By default, channel is unbuffered. To use buffering,
-        // simply specify the number in the ctor.
+        // Channel is unbuffered.
         std::cout << "[channel]\n";
         art::channel<int> ch;
+        writer(ch);
+        reader(ch);
+        std::cout << "\n------------\n";
+    }
+    {
+        // Use buffered_channel for buffering.
+        std::cout << "[buffered_channel]\n";
+        art::buffered_channel<int> ch(5);
         writer(ch);
         reader(ch);
         std::cout << "\n------------\n";
