@@ -47,6 +47,8 @@ namespace art
             std::unique_ptr<work_group, work_deleter> _group;
 
         public:
+            work() = default;
+
             explicit work(work_group& group) noexcept : _group(&group)
             {
                 group.push_work();

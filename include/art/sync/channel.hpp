@@ -78,7 +78,7 @@ namespace art
 
             bool await_ready() const noexcept
             {
-                return !_self;
+                return false;
             }
 
             template<class F>

@@ -230,7 +230,7 @@ namespace art
 
             bool await_ready() const noexcept
             {
-                return !_self;
+                return false;
             }
 
             bool do_suspend(coroutine_handle<> coro) noexcept
