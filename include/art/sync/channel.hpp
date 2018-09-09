@@ -19,16 +19,30 @@ namespace art
     {
         explicit channel(executor& exe = default_executor()) noexcept : _exe(exe) {}
 
+        ~channel() noexcept
+        {
+            if (auto p = _side.exchange(this, std::memory_order_acquire))
+            {
+                if (p != this)
+                    static_cast<awaiter_base*>(p)->_coro.destroy();
+            }
+        }
+
         void close() noexcept
         {
             if (auto p = _side.exchange(this, std::memory_order_acquire))
             {
                 if (p != this)
-                    _exe(static_cast<awaiter_base*>(p)->_coro);
+                    static_cast<awaiter_base*>(p)->resume();
             }
         }
 
         [[nodiscard]] auto push(T val)
+        {
+            return push(std::move(val), _exe);
+        }
+
+        [[nodiscard]] auto push(T val, executor& exe)
         {
             struct awaiter : awaiter_base
             {
@@ -45,10 +59,15 @@ namespace art
                     return !this->_data;
                 }
             };
-            return awaiter{{this, {}, std::move(val)}};
+            return awaiter{{this, exe, {}, std::move(val)}};
         }
 
         [[nodiscard]] auto pop()
+        {
+            return pop(_exe);
+        }
+
+        [[nodiscard]] auto pop(executor& exe)
         {
             struct awaiter : awaiter_base
             {
@@ -65,7 +84,7 @@ namespace art
                     return std::move(this->_data);
                 }
             };
-            return awaiter{{this, {}, {}}};
+            return awaiter{{this, exe, {}, {}}};
         }
 
     private:
@@ -73,6 +92,7 @@ namespace art
         struct awaiter_base
         {
             channel* _self;
+            executor& _exe;
             coroutine_handle<> _coro;
             std::optional<T> _data;
 
@@ -94,10 +114,15 @@ namespace art
                     if (_self->_side.compare_exchange_strong(p, nullptr, std::memory_order_relaxed))
                     {
                         f(_data, other->_data);
-                        _self->_exe(other->_coro);
+                        other->resume();
                     }
                 }
                 return false;
+            }
+
+            void resume()
+            {
+                _exe(_coro);
             }
         };
 
