@@ -83,7 +83,7 @@ namespace art
             return false;
         }
 
-        bool await_suspend(art::coroutine_handle<> coro) noexcept
+        bool await_suspend(coroutine_handle<> coro) noexcept
         {
             _chained.coro = coro;
             return _lock.lock_suspend(&_chained);
