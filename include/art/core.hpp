@@ -218,6 +218,48 @@ namespace art
         static local_executor exe;
         return exe;
     }
+
+    struct continuation
+    {
+        continuation() noexcept : _coro() {}
+
+        explicit continuation(coroutine_handle<> coro) noexcept : _coro(coro) {}
+
+        continuation(continuation&& other) noexcept : _coro(other._coro)
+        {
+            other._coro = nullptr;
+        }
+
+        continuation& operator=(continuation&& other) noexcept
+        {
+            if (_coro)
+                _coro.destroy();
+            _coro = other._coro;
+            other._coro = nullptr;
+            return *this;
+        }
+
+        ~continuation()
+        {
+            if (_coro)
+                _coro.destroy();
+        }
+
+        void operator()() noexcept
+        {
+            auto coro = _coro;
+            _coro = nullptr;
+            coro();
+        }
+
+        explicit operator bool() const noexcept
+        {
+            return _coro.operator bool();
+        }
+
+    private:
+        coroutine_handle<> _coro;
+    };
 }
 
 #endif
