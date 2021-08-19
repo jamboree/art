@@ -7,11 +7,11 @@
 #ifndef ART_CORE_HPP_INCLUDED
 #define ART_CORE_HPP_INCLUDED
 
-#include <experimental/coroutine>
+#include <coroutine>
 
 namespace art
 {
-    namespace coro_ts = std::experimental;
+    namespace coro_ts = std;
 
     using coro_ts::coroutine_handle;
 }

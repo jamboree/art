@@ -18,9 +18,9 @@ namespace art::detail
 
         struct final_awaiter
         {
-            bool await_ready() { return false; }
-            void await_suspend(coroutine_handle<>) { _coro(); }
-            void await_resume() {}
+            bool await_ready() noexcept { return false; }
+            void await_suspend(coroutine_handle<>) noexcept { _coro(); }
+            void await_resume() noexcept {}
 
             coroutine_handle<> _coro;
         };
